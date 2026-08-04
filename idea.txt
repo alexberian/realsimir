@@ -1,0 +1,32 @@
+the goal:
+generate realistic IR images from unlabeled synthetic IR images of ships. We also have real IR data of ships, sometimes the real mages have many ships.
+
+the idea:
+start with a foundation diffusion pretrained model, such as edm2. re train on the unlabeled real data in an unsupervised manner. to make a training image, we generate a bounding box of the ship using some bounding box algorithm. jitter the box by making it 10 or 20% larget than the ship. paste it back into the image slightly offset or rotated pixel gain changed or noised or whatever else. crop out a 256x256 image in the same spot from the doctored and original image. then we train the model to output the clean image. in this way the model is learning to clean poorly cropped images. then we can take croppings of the synthetic IR ship images and paste them into realworld images, then ask the model to do what it does best, clean poor-looking croppings. we train the diffusion model with noised versions of the target image of varying noise levels.
+
+where to get data/models:
+do not modify anything in /workspace/data/
+synthetic ir data is in /workspace/data/arete_ir_sim_data/
+real ir data is in /workspace/data/open_ir_images/
+diffusion model: https://github.com/NVlabs/edm2
+bounding box model: https://github.com/ayooshkathuria/pytorch-yolo-v3
+
+modules:
+ship bounding box detection object
+data augmentation object
+online data generator object
+diffusion model
+training object
+test object
+
+todo list:
+ DONE 01.  write description of the project and algorithm
+ 02.  start a git repo
+ 03.  download bounding box and diffusion model code bases into their own folders
+ 04.  create a conda environment that can support both the diffusion and the bounding box model
+ 05.  create ship cropping object
+ 06.  create data augmentation object
+ 07.  create data generator object
+ 08.  view test images before training
+ 09.  create training script with wandb logging
+ 10.  train diffusion model
