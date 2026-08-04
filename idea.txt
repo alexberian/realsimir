@@ -22,9 +22,9 @@ test object
 todo list:
  DONE 01.  write description of the project and algorithm
  DONE 02.  start a git repo
- 03.  download bounding box and diffusion model code bases into their own folders
- 04.  create a conda environment that can support both the diffusion and the bounding box model
- 05.  create ship cropping object
+ DONE 03.  download bounding box and diffusion model code bases into their own folders
+ DONE 04.  create a conda environment that can support both the diffusion and the bounding box model
+ DONE 05.  create ship cropping object  (realsimir/ship_cropper.py; demo figures: python main.py -> ./figures)
  06.  create data augmentation object
  07.  create data generator object
  08.  view test images before training

@@ -1,0 +1,6 @@
+[submodule "edm2"]
+	path = edm2
+	url = https://github.com/NVlabs/edm2.git
+[submodule "pytorch-yolo-v3"]
+	path = pytorch-yolo-v3
+	url = https://github.com/ayooshkathuria/pytorch-yolo-v3.git

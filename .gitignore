@@ -35,10 +35,6 @@ outputs/
 checkpoints/
 logs/
 wandb/
-
-# Third-party code bases downloaded in step 03
-edm2/
-pytorch-yolo-v3/
 *.weights
 
 # Editor / OS

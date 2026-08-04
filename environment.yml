@@ -1,0 +1,59 @@
+# Conda environment supporting BOTH code bases used by this project:
+#   - edm2            (NVlabs diffusion model)      -> needs torch>=2.1, diffusers/accelerate
+#   - pytorch-yolo-v3 (ship bounding box detection) -> needs torch, opencv, pandas
+#
+# Create with:  conda env create -f environment.yml
+# Update with:  conda env update -f environment.yml --prune
+#
+# REQUIRED follow-up (conda cannot express env vars in this file):
+#   conda env config vars set PYTHONNOUSERSITE=1 -n realsimir
+# Without it, ~/.local/lib/python3.10/site-packages is placed AHEAD of this env on
+# sys.path and shadows the pinned packages here (it currently carries numpy 2.2.6,
+# which breaks the diffusers 0.26.3 pin below).
+#
+# Notes:
+#   * Python 3.10 + torch 2.4 mirrors edm2's reference Dockerfile (nvcr.io/nvidia/pytorch:24.02-py3),
+#     which is python 3.10 / torch 2.3. edm2 requires >=3.9 and torch >=2.1.
+#   * edm2 has NO custom CUDA extensions, so no nvcc/compiler toolchain is required.
+#   * numpy is held at 1.26: the diffusers/accelerate versions edm2 pins predate numpy 2.0.
+#   * huggingface_hub/diffusers/accelerate pins come straight from edm2/Dockerfile.
+name: realsimir
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.10
+  - pip
+
+  # --- deep learning core (CUDA build; target GPU is an L40S / sm_89) ---
+  - pytorch-gpu=2.4.*
+  - torchvision
+
+  # --- edm2 dependencies ---
+  - click
+  - pillow
+  - psutil
+  - requests
+  - scipy
+  - tqdm
+  - numpy=1.26.*
+  - matplotlib
+
+  # --- pytorch-yolo-v3 dependencies ---
+  - opencv
+  - pandas
+
+  # --- project tooling (training logging, notebooks for step 08 image review) ---
+  - wandb
+  - ipykernel
+
+  - pip:
+      # Versions pinned by edm2/Dockerfile. huggingface_hub must stay at 0.25.2;
+      # 0.26.5 breaks diffusers 0.26.3 (see comment in edm2/Dockerfile).
+      - huggingface_hub==0.25.2
+      - diffusers==0.26.3
+      - accelerate==0.27.2
+      # Optional fast PNG reader; edm2/training/dataset.py falls back to PIL if absent.
+      - pyspng
