@@ -48,6 +48,9 @@ dependencies:
   # --- project tooling (training logging, notebooks for step 08 image review) ---
   - wandb
   - ipykernel
+  # tests/ -- the detector contract check runs here, so a new bounding box model
+  # can be validated without a training run
+  - pytest
 
   - pip:
       # Versions pinned by edm2/Dockerfile. huggingface_hub must stay at 0.25.2;

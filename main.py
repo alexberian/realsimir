@@ -2,18 +2,27 @@
 
 Runs the cropper over both halves of the data and dumps figures to ./figures:
 
-    01_real_detections.png       real IR frames + YOLO 'boat' boxes and windows
+    01_real_detections.png       real IR frames + detector boxes and windows
     02_real_crops.png            the 256x256 patches those windows produce
     03_synthetic_detections.png  arete renders + ground-truth boxes and windows
     04_synthetic_crops.png       the 256x256 patches those windows produce
     05_window_geometry.png       tiny vs. huge ship -- native crop vs. downscale
 
 Usage:  conda run -n realsimir python main.py [--out figures] [--seed 0]
+
+The real-imagery detector is chosen with --detector, so this doubles as the
+eyeball test when the bounding box model is swapped:
+
+    python main.py --detector yolov3 --detector-arg conf_thresh=0.35
+    python main.py --detector precomputed --detector-arg boxes_file=boxes.json
+    python main.py --detector mypkg.detectors:Yolov8ShipDetector --detector-arg weights=ir.pt
+    python main.py --list-detectors
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import glob
 import random
 from pathlib import Path
@@ -26,12 +35,19 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
-from realsimir import ARETE_ROOT, AreteMetadataDetector, ShipCropper, YoloShipDetector, load_image
+from realsimir import (
+    ARETE_ROOT,
+    OPEN_IR_ROOT,
+    ShipCropper,
+    build_detector,
+    check_detector,
+    describe_detectors,
+    load_image,
+)
 
-REAL_ROOT = Path("/workspace/data/open_ir_images")
 REAL_POOLS = {
-    "raysense": REAL_ROOT / "raysense" / "红外船舶数据库" / "dataset" / "images" / "train" / "*.jpg",
-    "MassMIND": REAL_ROOT / "MassMIND" / "Images" / "*.png",
+    "raysense": OPEN_IR_ROOT / "raysense" / "红外船舶数据库" / "dataset" / "images" / "train" / "*.jpg",
+    "MassMIND": OPEN_IR_ROOT / "MassMIND" / "Images" / "*.png",
 }
 
 DET_COLOR, PASTE_COLOR, WIN_COLOR = "#ff3b30", "#ffd60a", "#00d4ff"
@@ -86,7 +102,7 @@ def save(fig, path: Path, title: str, bottom: float = 0.0):
     print(f"  wrote {path}")
 
 
-def plot_frames(samples, out_path, title, ncols=4):
+def plot_frames(samples, out_path, title, ncols=4, paste_context=0.15, out_size=256):
     """samples: list of (image, crops, caption)."""
     fig, axes = grid(len(samples), ncols)
     for ax, (image, crops, caption) in zip(axes, samples):
@@ -101,8 +117,8 @@ def plot_frames(samples, out_path, title, ncols=4):
         ax.set_title(caption, fontsize=7)
     handles = [
         mpatches.Patch(color=DET_COLOR, label="detection"),
-        mpatches.Patch(color=PASTE_COLOR, label="paste box (+15%)"),
-        mpatches.Patch(color=WIN_COLOR, label="256 crop window"),
+        mpatches.Patch(color=PASTE_COLOR, label=f"paste box (+{paste_context:.0%})"),
+        mpatches.Patch(color=WIN_COLOR, label=f"{out_size} crop window"),
     ]
     fig.legend(handles=handles, loc="lower center", ncol=3, fontsize=8, frameon=False)
     save(fig, out_path, title, bottom=0.045)
@@ -129,7 +145,7 @@ def plot_crops(crops, out_path, title, ncols=4):
 # --------------------------------------------------------------------------- #
 
 
-def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=48, n_show=8):
+def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=48, n_show=8, tag=""):
     frames, keep = [], []
     for name, pattern in REAL_POOLS.items():
         paths = sorted(glob.glob(str(pattern)))
@@ -144,16 +160,23 @@ def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=
                 continue
             hits += 1
             keep.append((im, crops, f"[{name}] {Path(p).name[:28]}  ({len(crops)} ship)"))
-        print(f"  [{name}] {hits}/{len(sample)} frames with >=1 boat detection")
+        print(f"  [{name}] {hits}/{len(sample)} frames with >=1 detection")
 
     if not keep:
         print("  no real detections at all -- skipping real figures")
         return
     rng.shuffle(keep)
     frames = keep[:n_show]
-    plot_frames(frames, out_dir / "01_real_detections.png", "Real IR: YOLOv3 'boat' detections + crop windows")
+    n = cropper.out_size
+    plot_frames(
+        frames,
+        out_dir / "01_real_detections.png",
+        f"Real IR: {tag} detections + crop windows",
+        paste_context=cropper.paste_context,
+        out_size=n,
+    )
     crops = [c for _, cs, _ in frames for c in cs][:8]
-    plot_crops(crops, out_dir / "02_real_crops.png", "Real IR: 256x256 ship crops")
+    plot_crops(crops, out_dir / "02_real_crops.png", f"Real IR: {n}x{n} ship crops")
 
 
 # --------------------------------------------------------------------------- #
@@ -197,10 +220,15 @@ def run_synthetic(cropper: ShipCropper, out_dir: Path, rng: random.Random, n_sho
     if not frames:
         print("  no synthetic boxes -- skipping synthetic figures")
         return
+    n = cropper.out_size
     plot_frames(
-        frames, out_dir / "03_synthetic_detections.png", "Synthetic IR (arete): ground-truth boxes + crop windows"
+        frames,
+        out_dir / "03_synthetic_detections.png",
+        "Synthetic IR (arete): ground-truth boxes + crop windows",
+        paste_context=cropper.paste_context,
+        out_size=n,
     )
-    plot_crops(crops[:8], out_dir / "04_synthetic_crops.png", "Synthetic IR (arete): 256x256 ship crops")
+    plot_crops(crops[:8], out_dir / "04_synthetic_crops.png", f"Synthetic IR (arete): {n}x{n} ship crops")
 
 
 # --------------------------------------------------------------------------- #
@@ -250,10 +278,28 @@ def run_window_geometry(cropper: ShipCropper, out_dir: Path):
         for ax in (ax_full, ax_crop):
             ax.set_xticks([])
             ax.set_yticks([])
-    save(fig, out_dir / "05_window_geometry.png", "Crop window: never below 256 px, downscaled only for big ships")
+    save(
+        fig,
+        out_dir / "05_window_geometry.png",
+        f"Crop window: never below {cropper.out_size} px, downscaled only for big ships",
+    )
 
 
 # --------------------------------------------------------------------------- #
+
+
+def detector_args(pairs: list[str]) -> dict:
+    """--detector-arg conf_thresh=0.3 --detector-arg class_names=['boat','aeroplane']"""
+    out = {}
+    for p in pairs:
+        if "=" not in p:
+            raise SystemExit(f"--detector-arg needs key=value, got {p!r}")
+        k, _, v = p.partition("=")
+        try:
+            out[k.strip()] = ast.literal_eval(v)
+        except (ValueError, SyntaxError):
+            out[k.strip()] = v
+    return out
 
 
 def main():
@@ -262,27 +308,59 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out-size", type=int, default=256)
     ap.add_argument("--paste-context", type=float, default=0.15)
-    ap.add_argument("--conf", type=float, default=0.25, help="YOLO objectness*class threshold")
     ap.add_argument("--max-crops", type=int, default=3, help="keep at most N ships per real frame")
+    ap.add_argument(
+        "--detector",
+        default="yolov3",
+        help="bounding box model for the real IR frames: a registered name, or 'module:ClassName'",
+    )
+    ap.add_argument(
+        "--detector-arg",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="constructor argument for --detector; repeatable",
+    )
+    ap.add_argument("--conf", type=float, default=None, help="shorthand for --detector-arg conf_thresh=")
+    ap.add_argument("--skip-real", action="store_true", help="synthetic figures only (no detector needed)")
+    ap.add_argument("--skip-synthetic", action="store_true")
+    ap.add_argument("--check", action="store_true", help="run the contract check on --detector first")
+    ap.add_argument("--list-detectors", action="store_true", help="print the registry and exit")
     args = ap.parse_args()
+
+    if args.list_detectors:
+        for name, doc in describe_detectors().items():
+            print(f"  {name:<12}  {doc}")
+        print("\n  ...or any 'module:ClassName' path to a ShipDetector subclass.")
+        return
 
     args.out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
 
-    print("synthetic IR (arete metadata boxes)")
-    sim_cropper = ShipCropper(
-        AreteMetadataDetector(), out_size=args.out_size, paste_context=args.paste_context
-    )
-    run_synthetic(sim_cropper, args.out, rng)
-    run_window_geometry(sim_cropper, args.out)
+    if not args.skip_synthetic:
+        print("synthetic IR (arete metadata boxes)")
+        sim_cropper = ShipCropper("arete", out_size=args.out_size, paste_context=args.paste_context)
+        run_synthetic(sim_cropper, args.out, rng)
+        run_window_geometry(sim_cropper, args.out)
 
-    print("real IR (yolov3 'boat')")
-    yolo = YoloShipDetector(conf_thresh=args.conf)
-    print(f"  device={yolo.device}, input={yolo.input_size}, conf>={args.conf}")
+    if args.skip_real:
+        print(f"done -> {args.out.resolve()}")
+        return
+
+    kwargs = detector_args(args.detector_arg)
+    if args.conf is not None:
+        kwargs["conf_thresh"] = args.conf
+    print(f"real IR ({args.detector})")
+    detector = build_detector(args.detector, **kwargs)
+    print(f"  {detector!r}")
+    if args.check:
+        pool = sorted(glob.glob(str(next(iter(REAL_POOLS.values())))))[:2]
+        check_detector(detector, samples=pool or None, strict=True)
+
     real_cropper = ShipCropper(
-        yolo, out_size=args.out_size, paste_context=args.paste_context, max_crops=args.max_crops
+        detector, out_size=args.out_size, paste_context=args.paste_context, max_crops=args.max_crops
     )
-    run_real(real_cropper, args.out, rng)
+    run_real(real_cropper, args.out, rng, tag=args.detector)
 
     print(f"done -> {args.out.resolve()}")
 

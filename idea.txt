@@ -10,6 +10,11 @@ synthetic ir data is in /workspace/data/arete_ir_sim_data/
 real ir data is in /workspace/data/open_ir_images/
 diffusion model: https://github.com/NVlabs/edm2
 bounding box model: https://github.com/ayooshkathuria/pytorch-yolo-v3
+  ^ a placeholder -- COCO 'boat' has never seen an IR image. The detector is a plug-in
+    (realsimir/detectors/), picked by name: ShipCropper("yolov3") / "arete" / "precomputed",
+    or "module:ClassName" for a model living outside this repo. See that package's
+    docstring for how to add one, and `python -m realsimir.detectors check <name>` to
+    validate it before training on its boxes.
 
 modules:
 ship bounding box detection object
@@ -24,7 +29,9 @@ todo list:
  DONE 02.  start a git repo
  DONE 03.  download bounding box and diffusion model code bases into their own folders
  DONE 04.  create a conda environment that can support both the diffusion and the bounding box model
- DONE 05.  create ship cropping object  (realsimir/ship_cropper.py; demo figures: python main.py -> ./figures)
+ DONE 05.  create ship cropping object  (realsimir/ship_cropper.py, detectors in
+           realsimir/detectors/; demo figures: python main.py [--detector NAME] -> ./figures;
+           tests: python -m pytest tests)
  06.  create data augmentation object
  07.  create data generator object
  08.  view test images before training
