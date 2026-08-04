@@ -21,7 +21,7 @@ test object
 
 todo list:
  DONE 01.  write description of the project and algorithm
- 02.  start a git repo
+ DONE 02.  start a git repo
  03.  download bounding box and diffusion model code bases into their own folders
  04.  create a conda environment that can support both the diffusion and the bounding box model
  05.  create ship cropping object
