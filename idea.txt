@@ -32,7 +32,11 @@ todo list:
  DONE 05.  create ship cropping object  (realsimir/ship_cropper.py, detectors in
            realsimir/detectors/; demo figures: python main.py [--detector NAME] -> ./figures;
            tests: python -m pytest tests)
- 06.  create data augmentation object
+ DONE 06.  create data augmentation object  (realsimir/augment/: ShipAugmenter builds the
+           (clean, doctored) pair, ops.py holds the corruptions and a registry so the
+           training config can name them.  aug(crop, seed=i) -> pair.doctored/.clean/.mask;
+           pasting a synthetic chunk into a real frame is the same call with source=.
+           python -m realsimir.augment list | check; figures 06-08 from python main.py)
  07.  create data generator object
  08.  view test images before training
  09.  create training script with wandb logging

@@ -9,6 +9,7 @@ Layout:
     imaging.py     image loading and dtype adapters
     detectors/     bounding box back ends, selected by name (step 05a)
     ship_cropper.py  ShipCropper: detector + crop policy (step 05b)
+    augment/       ShipAugmenter: clean/doctored training pairs (step 06)
 
 The bounding box model is a value, not a hard-coded class:
 
@@ -16,10 +17,19 @@ The bounding box model is a value, not a hard-coded class:
     crops = ShipCropper("yolov3", conf_thresh=0.3)("/path/to/frame.jpg")
 
 `realsimir/detectors/__init__.py` documents how to add another one.
+
+Front of the pipeline, end to end:
+
+    from realsimir import ShipAugmenter, ShipCropper
+
+    cropper, aug = ShipCropper("arete"), ShipAugmenter()
+    for i, crop in enumerate(cropper(path)):
+        pair = aug(crop, seed=i)        # pair.doctored -> model -> pair.clean
 """
 
 from __future__ import annotations
 
+from .augment import AugmentedPair, ShipAugmenter, check_augmenter
 from .boxes import BBox, ShipCrop
 from .detectors import (
     FunctionDetector,
@@ -30,7 +40,7 @@ from .detectors import (
     describe_detectors,
     register_detector,
 )
-from .imaging import load_image, to_uint8_rgb
+from .imaging import from_float01, load_image, to_float01, to_uint8_rgb
 from .paths import ARETE_ROOT, EDM2_DIR, OPEN_IR_ROOT, REPO_ROOT, YOLO_DIR
 from .ship_cropper import ShipCropper
 
@@ -40,6 +50,10 @@ __all__ = [
     "ShipCrop",
     # cropping
     "ShipCropper",
+    # augmentation
+    "ShipAugmenter",
+    "AugmentedPair",
+    "check_augmenter",
     # detectors
     "ShipDetector",
     "FunctionDetector",
@@ -55,6 +69,8 @@ __all__ = [
     # io / paths
     "load_image",
     "to_uint8_rgb",
+    "to_float01",
+    "from_float01",
     "ARETE_ROOT",
     "OPEN_IR_ROOT",
     "REPO_ROOT",

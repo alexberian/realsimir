@@ -1,12 +1,15 @@
-"""Demo / sanity check for todo step 05 (ship cropping object).
+"""Demo / sanity check for todo steps 05 (ship cropping) and 06 (augmentation).
 
-Runs the cropper over both halves of the data and dumps figures to ./figures:
+Runs the pipeline over both halves of the data and dumps figures to ./figures:
 
     01_real_detections.png       real IR frames + detector boxes and windows
     02_real_crops.png            the 256x256 patches those windows produce
     03_synthetic_detections.png  arete renders + ground-truth boxes and windows
     04_synthetic_crops.png       the 256x256 patches those windows produce
     05_window_geometry.png       tiny vs. huge ship -- native crop vs. downscale
+    06_augmented_pairs.png       clean | doctored | difference: the training pair
+    07_corruption_ops.png        one corruption at a time, exaggerated
+    08_synthetic_into_real.png   the same paste at test time: sim ship, real frame
 
 Usage:  conda run -n realsimir python main.py [--out figures] [--seed 0]
 
@@ -25,6 +28,7 @@ import argparse
 import ast
 import glob
 import random
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -38,12 +42,16 @@ import numpy as np
 from realsimir import (
     ARETE_ROOT,
     OPEN_IR_ROOT,
+    BBox,
+    ShipAugmenter,
     ShipCropper,
     build_detector,
+    check_augmenter,
     check_detector,
     describe_detectors,
     load_image,
 )
+from realsimir.augment import DEFAULT_OPS
 
 REAL_POOLS = {
     "raysense": OPEN_IR_ROOT / "raysense" / "红外船舶数据库" / "dataset" / "images" / "train" / "*.jpg",
@@ -58,10 +66,16 @@ DET_COLOR, PASTE_COLOR, WIN_COLOR = "#ff3b30", "#ffd60a", "#00d4ff"
 # --------------------------------------------------------------------------- #
 
 
-def stretch(img: np.ndarray, lo_pct: float = 1.0, hi_pct: float = 99.5) -> np.ndarray:
-    """Percentile stretch -- LWIR renders are near-flat and invisible raw."""
+def stretch(img: np.ndarray, lo_pct: float = 1.0, hi_pct: float = 99.5, ref: np.ndarray | None = None) -> np.ndarray:
+    """Percentile stretch -- LWIR renders are near-flat and invisible raw.
+
+    `ref` fixes the limits from another image: a clean/doctored pair has to be
+    stretched identically or a gain change re-normalises itself away and the
+    figure shows nothing.
+    """
     a = img.astype(np.float32)
-    lo, hi = np.percentile(a, lo_pct), np.percentile(a, hi_pct)
+    r = a if ref is None else ref.astype(np.float32)
+    lo, hi = np.percentile(r, lo_pct), np.percentile(r, hi_pct)
     return np.zeros_like(a) if hi <= lo else np.clip((a - lo) / (hi - lo), 0, 1)
 
 
@@ -145,7 +159,7 @@ def plot_crops(crops, out_path, title, ncols=4):
 # --------------------------------------------------------------------------- #
 
 
-def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=48, n_show=8, tag=""):
+def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=48, n_show=8, tag="") -> list:
     frames, keep = [], []
     for name, pattern in REAL_POOLS.items():
         paths = sorted(glob.glob(str(pattern)))
@@ -164,7 +178,7 @@ def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=
 
     if not keep:
         print("  no real detections at all -- skipping real figures")
-        return
+        return []
     rng.shuffle(keep)
     frames = keep[:n_show]
     n = cropper.out_size
@@ -177,6 +191,7 @@ def run_real(cropper: ShipCropper, out_dir: Path, rng: random.Random, pool_size=
     )
     crops = [c for _, cs, _ in frames for c in cs][:8]
     plot_crops(crops, out_dir / "02_real_crops.png", f"Real IR: {n}x{n} ship crops")
+    return frames
 
 
 # --------------------------------------------------------------------------- #
@@ -205,7 +220,7 @@ def arete_samples(rng: random.Random, n=8, split="full_ir", min_width=24, max_wi
     return picks
 
 
-def run_synthetic(cropper: ShipCropper, out_dir: Path, rng: random.Random, n_show=8):
+def run_synthetic(cropper: ShipCropper, out_dir: Path, rng: random.Random, n_show=8) -> list:
     paths = arete_samples(rng, n=n_show)
     frames, crops = [], []
     for p in paths:
@@ -219,7 +234,7 @@ def run_synthetic(cropper: ShipCropper, out_dir: Path, rng: random.Random, n_sho
         crops.extend(cs)
     if not frames:
         print("  no synthetic boxes -- skipping synthetic figures")
-        return
+        return []
     n = cropper.out_size
     plot_frames(
         frames,
@@ -229,6 +244,170 @@ def run_synthetic(cropper: ShipCropper, out_dir: Path, rng: random.Random, n_sho
         out_size=n,
     )
     plot_crops(crops[:8], out_dir / "04_synthetic_crops.png", f"Synthetic IR (arete): {n}x{n} ship crops")
+    return crops
+
+
+# --------------------------------------------------------------------------- #
+# augmentation (step 06)
+# --------------------------------------------------------------------------- #
+
+RECT_COLOR = "#ff2fd0"
+
+
+def plot_pairs(pairs, out_path, title):
+    """clean | doctored | |difference|, one example per row."""
+    fig, axes = plt.subplots(len(pairs), 3, figsize=(9.6, 4.0 * len(pairs)))
+    axes = np.atleast_2d(axes)
+    for (pair, name, drawn), row in zip(pairs, axes):
+        diff = pair.difference()
+        for ax, img in zip(row, (pair.clean, pair.doctored, diff)):
+            if img is diff:  # a real scale, not a percentile stretch: the point
+                ax.imshow(diff, cmap="magma", vmin=0, vmax=max(float(diff.max()), 1e-6))
+            else:  # is how much changed, and where
+                ax.imshow(stretch(img, ref=pair.clean), cmap="gray", vmin=0, vmax=1)
+            draw_box(ax, pair.rect, RECT_COLOR)
+            draw_box(ax, pair.ship, DET_COLOR, ls=":")
+            ax.set_xticks([])
+            ax.set_yticks([])
+        row[0].set_title("clean -- the target", fontsize=8)
+        row[1].set_title("doctored -- the model's input", fontsize=8)
+        row[2].set_title(f"|difference|, max {diff.max():.2f}", fontsize=8)
+        row[0].set_ylabel(name, fontsize=7)
+        row[1].set_xlabel(textwrap.fill(drawn, 78), fontsize=5.5, family="monospace")
+    handles = [
+        mpatches.Patch(color=DET_COLOR, label="detection"),
+        mpatches.Patch(color=RECT_COLOR, label="paste rectangle (jittered +10-20%)"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=8, frameon=False)
+    save(fig, out_path, title, bottom=0.03)
+
+
+def run_augment(aug: ShipAugmenter, crops, out_dir: Path, seed: int, n_show=4):
+    """Figure 06: the training pairs.  Figure 07: what each corruption does."""
+    if not crops:
+        print("  no crops to augment -- skipping augmentation figures")
+        return
+    pairs = []
+    for i, crop in enumerate(crops[:n_show]):
+        pair = aug(crop, seed=seed + i)
+        drawn = " ".join(
+            f"{k}{_fmt(v)}" for fam in ("geometric", "photometric") for k, v in pair.params[fam].items()
+        )
+        name = Path(crop.path).name[:26] if crop.path else f"crop {i}"
+        pairs.append((pair, name, f"seed {pair.seed}: {drawn}"))
+    plot_pairs(
+        pairs,
+        out_dir / "06_augmented_pairs.png",
+        f"Step 06: training pairs -- ops {list(DEFAULT_OPS)}",
+    )
+
+    # one crop, one op at a time, each turned up until it is visible on paper
+    crop = crops[0]
+    demos = [
+        ("shift", {"max_px": 10, "max_frac": 1.0}),
+        ("rotate", {"max_deg": 10}),
+        ("rescale", {"factor": (1.15, 1.18)}),
+        ("gain", {"factor": (1.3, 1.35)}),
+        ("level", {"amount": 0.12}),
+        ("gamma", {"factor": (0.55, 0.6)}),
+        ("blur", {"sigma": (2.0, 2.2)}),
+        ("noise", {"sigma": (0.06, 0.07)}),
+        ("stripe", {"sigma": (0.04, 0.05)}),
+    ]
+    fig, axes = grid(len(demos) + 2, 4, figsize_per=2.8)
+    clean = aug(crop, seed=seed).clean
+    axes[0].set_axis_on()
+    axes[0].imshow(stretch(clean), cmap="gray", vmin=0, vmax=1)
+    axes[0].set_title("clean", fontsize=8)
+    for ax, (name, kwargs) in zip(axes[1:], demos):
+        # p=1 and a fixed rectangle: every panel differs only by its one op
+        one = ShipAugmenter(ops={name: {**kwargs, "p": 1.0}}, context=(0.15, 0.15), offset_frac=0.0)
+        pair = one(crop, seed=seed)
+        ax.set_axis_on()
+        ax.imshow(stretch(pair.doctored, ref=pair.clean), cmap="gray", vmin=0, vmax=1)
+        draw_box(ax, pair.rect, RECT_COLOR)
+        drawn = {**pair.params["geometric"], **pair.params["photometric"]}
+        ax.set_title(f"{name}  {_fmt(next(iter(drawn.values()), {}))}", fontsize=8)
+    ax = axes[len(demos) + 1]
+    pair = ShipAugmenter()(crop, seed=seed)
+    ax.set_axis_on()
+    ax.imshow(stretch(pair.doctored, ref=pair.clean), cmap="gray", vmin=0, vmax=1)
+    draw_box(ax, pair.rect, RECT_COLOR)
+    ax.set_title("all defaults, stacked", fontsize=8)
+    for ax in axes:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    save(
+        fig,
+        out_dir / "07_corruption_ops.png",
+        "Step 06: one corruption at a time, exaggerated (magenta = paste rectangle)",
+    )
+
+
+def run_paste(aug: ShipAugmenter, cropper: ShipCropper, sim_crops, real_frames, out_dir: Path, seed: int, n_show=3):
+    """Figure 08: the same machinery at test time -- a synthetic ship in a real frame.
+
+    Not a training pair: the target does not exist.  It is here because the
+    composite has to come out of the same code as the training one, and this is
+    the figure that shows whether it does.
+    """
+    if not sim_crops or not real_frames:
+        print("  need both halves of the data for the paste figure -- skipping")
+        return
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(min(n_show, len(sim_crops), len(real_frames))):
+        sim = sim_crops[i]
+        frame = real_frames[i][0]
+        # the ship chunk out of the synthetic crop, at its native pixel size
+        x0, y0, x1, y1 = sim.paste_box_in_patch().clipped(*sim.patch.shape[:2][::-1]).as_int()
+        donor = sim.patch[y0:y1, x0:x1]
+        if min(donor.shape[:2]) < 4:
+            continue
+        # naive placement -- lower half, and far enough in that the display
+        # window does not run off the frame.  *Where* a ship plausibly goes is a
+        # question for step 08; this figure is about the composite, not the spot.
+        h, w = frame.shape[:2]
+        dh, dw = donor.shape[:2]
+        half = cropper.out_size / 2
+        cx = float(np.clip(rng.uniform(0.25, 0.75) * w, min(half, w / 2), max(w - half, w / 2)))
+        cy = float(np.clip(rng.uniform(0.55, 0.85) * h, min(half, h / 2), max(h - half, h / 2)))
+        target = BBox(cx - dw / 2, cy - dh / 2, cx + dw / 2, cy + dh / 2, label="ship")
+        plain = aug.augment(frame, target, source=donor, seed=seed + i)
+        matched = aug.augment(frame, target, source=donor, seed=seed + i, match_levels=True)
+        rows.append((sim, donor, cropper.crop(frame, target), cropper.crop(plain.doctored, target),
+                     cropper.crop(matched.doctored, target), plain))
+
+    if not rows:
+        print("  no usable synthetic donors -- skipping the paste figure")
+        return
+    fig, axes = plt.subplots(len(rows), 4, figsize=(12, 3.4 * len(rows)))
+    axes = np.atleast_2d(axes)
+    for i, ((sim, donor, host, pasted, matched, pair), row) in enumerate(zip(rows, axes)):
+        panels = [
+            (donor, None, "synthetic ship chunk"),
+            (host.patch, None, "real frame, before"),
+            (pasted.patch, host.patch, "pasted (levels as rendered)"),
+            (matched.patch, host.patch, "pasted, match_levels=True"),
+        ]
+        for ax, (img, ref, name) in zip(row, panels):
+            ax.imshow(stretch(img, ref=ref), cmap="gray", vmin=0, vmax=1)
+            if ref is not None:
+                draw_box(ax, pair.rect.shifted(-pasted.window.x_min, -pasted.window.y_min), RECT_COLOR)
+            if i == 0:
+                ax.set_title(name, fontsize=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        row[0].set_ylabel(f"{donor.shape[1]}x{donor.shape[0]} px", fontsize=7)
+    save(
+        fig,
+        out_dir / "08_synthetic_into_real.png",
+        "Step 06 at test time: synthetic ship crops pasted into real IR frames",
+    )
+
+
+def _fmt(params: dict) -> str:
+    return "(" + ", ".join(f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items()) + ")"
 
 
 # --------------------------------------------------------------------------- #
@@ -324,6 +503,10 @@ def main():
     ap.add_argument("--conf", type=float, default=None, help="shorthand for --detector-arg conf_thresh=")
     ap.add_argument("--skip-real", action="store_true", help="synthetic figures only (no detector needed)")
     ap.add_argument("--skip-synthetic", action="store_true")
+    ap.add_argument("--skip-augment", action="store_true", help="cropping figures only (steps 05)")
+    ap.add_argument(
+        "--feather", type=float, default=0.0, help="soften the paste seam by this many px (step 06)"
+    )
     ap.add_argument("--check", action="store_true", help="run the contract check on --detector first")
     ap.add_argument("--list-detectors", action="store_true", help="print the registry and exit")
     args = ap.parse_args()
@@ -336,31 +519,39 @@ def main():
 
     args.out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
+    sim_cropper = ShipCropper("arete", out_size=args.out_size, paste_context=args.paste_context)
+    sim_crops, real_frames = [], []
 
     if not args.skip_synthetic:
         print("synthetic IR (arete metadata boxes)")
-        sim_cropper = ShipCropper("arete", out_size=args.out_size, paste_context=args.paste_context)
-        run_synthetic(sim_cropper, args.out, rng)
+        sim_crops = run_synthetic(sim_cropper, args.out, rng)
         run_window_geometry(sim_cropper, args.out)
 
-    if args.skip_real:
-        print(f"done -> {args.out.resolve()}")
-        return
+    if not args.skip_real:
+        kwargs = detector_args(args.detector_arg)
+        if args.conf is not None:
+            kwargs["conf_thresh"] = args.conf
+        print(f"real IR ({args.detector})")
+        detector = build_detector(args.detector, **kwargs)
+        print(f"  {detector!r}")
+        if args.check:
+            pool = sorted(glob.glob(str(next(iter(REAL_POOLS.values())))))[:2]
+            check_detector(detector, samples=pool or None, strict=True)
 
-    kwargs = detector_args(args.detector_arg)
-    if args.conf is not None:
-        kwargs["conf_thresh"] = args.conf
-    print(f"real IR ({args.detector})")
-    detector = build_detector(args.detector, **kwargs)
-    print(f"  {detector!r}")
-    if args.check:
-        pool = sorted(glob.glob(str(next(iter(REAL_POOLS.values())))))[:2]
-        check_detector(detector, samples=pool or None, strict=True)
+        real_cropper = ShipCropper(
+            detector, out_size=args.out_size, paste_context=args.paste_context, max_crops=args.max_crops
+        )
+        real_frames = run_real(real_cropper, args.out, rng, tag=args.detector)
 
-    real_cropper = ShipCropper(
-        detector, out_size=args.out_size, paste_context=args.paste_context, max_crops=args.max_crops
-    )
-    run_real(real_cropper, args.out, rng, tag=args.detector)
+    if not args.skip_augment:
+        print("augmentation (step 06)")
+        aug = ShipAugmenter(feather_px=args.feather)
+        print(f"  {aug!r}")
+        check_augmenter(aug, strict=True)
+        # prefer real crops: the corruption has to look plausible on the imagery
+        # the model is actually trained on
+        run_augment(aug, [c for _, cs, _ in real_frames for c in cs] or sim_crops, args.out, args.seed)
+        run_paste(aug, sim_cropper, sim_crops, real_frames, args.out, args.seed)
 
     print(f"done -> {args.out.resolve()}")
 
