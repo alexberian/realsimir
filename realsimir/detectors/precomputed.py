@@ -31,6 +31,11 @@ file written on another machine still resolves.  `BBox.from_dict` also accepts
 `bbox: [x0,y0,x1,y1]` / `confidence` / `class`, which covers most exporters
 without a conversion step.  An empty list means "detector ran, found nothing" --
 a missing key means "never ran", and raises unless `allow_missing`.
+
+Keys beginning with `__` are metadata, not frames, and are skipped: step 07's
+`CropIndex` writes its provenance (which detector, when, with what thresholds)
+under `__meta__` so that an index file and a precomputed-boxes file stay the
+same file, readable by either.
 """
 
 from __future__ import annotations
@@ -77,6 +82,8 @@ class PrecomputedDetector(ShipDetector):
         # an exact path always beats a basename collision
         self._by_key: dict[str, list[BBox]] = {}
         for key, boxes in raw.items():
+            if key.startswith("__"):  # provenance written by CropIndex.save
+                continue
             parsed = [BBox.from_dict(b) for b in boxes]
             for k in self._key_forms(key):
                 self._by_key.setdefault(k, parsed)

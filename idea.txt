@@ -37,7 +37,20 @@ todo list:
            training config can name them.  aug(crop, seed=i) -> pair.doctored/.clean/.mask;
            pasting a synthetic chunk into a real frame is the same call with source=.
            python -m realsimir.augment list | check; figures 06-08 from python main.py)
- 07.  create data generator object
+ DONE 07.  create data generator object  (realsimir/data/: ShipDataGenerator streams
+           (clean, doctored, mask) pairs online -- boxes come from a CropIndex detected
+           once and cached, pixels and corruption come per call, and every example is
+           seeded from (run seed, epoch, index) so workers cannot change the data.
+           CompositeGenerator is the test-time stream, two kinds: synthetic ships into
+           real frames (what the model is for, no target) and .self_paste(), the same
+           ships back in their own renders by the training recipe, which does have a
+           target so the model can be scored.  Placed ships are rolled at most
+           max_rotation_deg (2) -- a hull sits level on the water.  figure 09 from
+           python main.py is the self-paste test set; 08 is the same paste into real
+           frames.
+           pools.py names the corpora ('real', 'raysense', 'arete'); torch_dataset.py is
+           the DataLoader adapter, uint8 NCHW the way edm2's encoder wants it.
+           python -m realsimir.data pools | index | check | stats)
  08.  view test images before training
  09.  create training script with wandb logging
  10.  train diffusion model

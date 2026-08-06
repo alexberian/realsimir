@@ -10,6 +10,7 @@ Layout:
     detectors/     bounding box back ends, selected by name (step 05a)
     ship_cropper.py  ShipCropper: detector + crop policy (step 05b)
     augment/       ShipAugmenter: clean/doctored training pairs (step 06)
+    data/          ShipDataGenerator: the stream those two feed (step 07)
 
 The bounding box model is a value, not a hard-coded class:
 
@@ -25,12 +26,29 @@ Front of the pipeline, end to end:
     cropper, aug = ShipCropper("arete"), ShipAugmenter()
     for i, crop in enumerate(cropper(path)):
         pair = aug(crop, seed=i)        # pair.doctored -> model -> pair.clean
+
+...which is what `realsimir.data` runs over a corpus, for as long as training
+lasts:
+
+    from realsimir.data import ShipDataGenerator
+
+    gen = ShipDataGenerator("real", index_file="boxes/real.json")
+    for pair in gen.stream():
+        ...
 """
 
 from __future__ import annotations
 
 from .augment import AugmentedPair, ShipAugmenter, check_augmenter
 from .boxes import BBox, ShipCrop
+from .data import (
+    Composite,
+    CompositeGenerator,
+    CropIndex,
+    ShipDataGenerator,
+    check_generator,
+    resolve_paths,
+)
 from .detectors import (
     FunctionDetector,
     ShipDetector,
@@ -54,6 +72,13 @@ __all__ = [
     "ShipAugmenter",
     "AugmentedPair",
     "check_augmenter",
+    # the data stream
+    "ShipDataGenerator",
+    "CompositeGenerator",
+    "Composite",
+    "CropIndex",
+    "check_generator",
+    "resolve_paths",
     # detectors
     "ShipDetector",
     "FunctionDetector",

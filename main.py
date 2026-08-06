@@ -10,6 +10,8 @@ Runs the pipeline over both halves of the data and dumps figures to ./figures:
     06_augmented_pairs.png       clean | doctored | difference: the training pair
     07_corruption_ops.png        one corruption at a time, exaggerated
     08_synthetic_into_real.png   the same paste at test time: sim ship, real frame
+    09_synthetic_into_self.png   sim ship back into its own render -- the test
+                                 images that have a right answer
 
 Usage:  conda run -n realsimir python main.py [--out figures] [--seed 0]
 
@@ -43,13 +45,16 @@ from realsimir import (
     ARETE_ROOT,
     OPEN_IR_ROOT,
     BBox,
+    CompositeGenerator,
     ShipAugmenter,
     ShipCropper,
+    ShipDataGenerator,
     build_detector,
     check_augmenter,
     check_detector,
     describe_detectors,
     load_image,
+    to_float01,
 )
 from realsimir.augment import DEFAULT_OPS
 
@@ -252,6 +257,7 @@ def run_synthetic(cropper: ShipCropper, out_dir: Path, rng: random.Random, n_sho
 # --------------------------------------------------------------------------- #
 
 RECT_COLOR = "#ff2fd0"
+DIFFERENCE = object()  # panel marker: plot this one on an absolute scale, not stretched
 
 
 def plot_pairs(pairs, out_path, title):
@@ -406,6 +412,107 @@ def run_paste(aug: ShipAugmenter, cropper: ShipCropper, sim_crops, real_frames, 
     )
 
 
+def run_self_paste(aug, cropper: ShipCropper, sim_crops, out_dir: Path, seed: int, n_show=3):
+    """Figure 09: the same test-time paste, pointed back at the renders themselves.
+
+    Figure 08 is what the model is *for* and cannot be scored: nobody ever
+    photographed that ship in that harbour, so there is no right answer to
+    compare against.  This one puts each synthetic ship back into its own render
+    by the recipe the training set is made with, which leaves the original as the
+    answer -- the only test images in this project where "is the output correct"
+    is a question with a number behind it.
+
+    Built through CompositeGenerator rather than by hand, so what is on paper is
+    what step 10 will actually be fed.
+    """
+    paths = list(dict.fromkeys(c.path for c in sim_crops if c.path))
+    if not paths:
+        print("  no synthetic crops -- skipping the self-paste figure")
+        return
+    # the cropper and its (warm) metadata detector are reused, so these rows are
+    # the same windows as figures 03/04, and no CSV is read twice
+    gen = ShipDataGenerator(
+        paths,
+        detector=cropper.detector,
+        cropper=cropper,
+        augmenter=aug,
+        min_side=4.0,
+        seed=seed,
+        progress=False,
+    )
+    test = CompositeGenerator.self_paste(gen, seed=seed)
+    print(f"  {test!r}")
+    rows = [test[i] for i in range(min(n_show, len(test)))]
+
+    fig, axes = plt.subplots(len(rows), 5, figsize=(16, 3.3 * len(rows)))
+    axes = np.atleast_2d(axes)
+    for i, (c, row) in enumerate(zip(rows, axes)):
+        rect = mask_box(c.mask)
+        zx0, zy0, zx1, zy1 = zoom_window(rect, c.patch.shape[:2]).as_int()
+        zoom = (slice(zy0, zy1), slice(zx0, zx1))
+        near = rect.shifted(-zx0, -zy0)  # the rectangle in the zoom's coordinates
+        diff = np.abs(to_float01(c.patch) - to_float01(c.target))
+        # the two close-ups share the target's stretch, or a gain change would
+        # re-normalise itself away and the seam would vanish from the figure
+        ship, near_ship = c.box_in_patch(), c.box_in_patch().shifted(-zx0, -zy0)
+        panels = [
+            (c.target[zoom], None, (near_ship,), "close up: the target"),
+            (c.patch[zoom], c.target[zoom], (near, near_ship), "close up: what the model is given"),
+            (c.target, None, (), "the render, before -- the target"),
+            (c.patch, c.target, (rect, ship), "pasted back into itself -- the input"),
+            (diff, DIFFERENCE, (rect, ship), f"|difference|, max {diff.max():.2f}"),
+        ]
+        for ax, (img, ref, boxes, name) in zip(row, panels):
+            if ref is DIFFERENCE:  # a real scale, not a stretch: how much moved, and where
+                ax.imshow(img, cmap="magma", vmin=0, vmax=max(float(img.max()), 1e-6))
+            else:
+                ax.imshow(stretch(img, ref=ref), cmap="gray", vmin=0, vmax=1)
+            for box, color in zip(boxes, (RECT_COLOR, DET_COLOR) if len(boxes) > 1 else (DET_COLOR,)):
+                draw_box(ax, box, color, ls="-" if color == RECT_COLOR else ":")
+            ax.set_title(name if i == 0 else "", fontsize=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        drawn = " ".join(
+            f"{k}{_fmt(v)}" for fam in ("geometric", "photometric") for k, v in c.params[fam].items()
+        )
+        row[0].set_ylabel(
+            f"{Path(c.donor_path).name[:22]}\nship {c.box.width:.0f}x{c.box.height:.0f} px", fontsize=6
+        )
+        row[3].set_xlabel(textwrap.fill(f"seed {c.seed}: {drawn}", 108), fontsize=5.5, family="monospace")
+    handles = [
+        mpatches.Patch(color=DET_COLOR, label="ship box (the metadata's, dotted)"),
+        mpatches.Patch(color=RECT_COLOR, label="paste rectangle -- the only pixels the model may change"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=8, frameon=False)
+    save(
+        fig,
+        out_dir / "09_synthetic_into_self.png",
+        f"Step 07 test set: synthetic ships pasted back into their own renders "
+        f"(roll capped at {test.max_rotation_deg}°)",
+        bottom=0.03,
+    )
+
+
+def mask_box(mask: np.ndarray) -> BBox:
+    """The rectangle the paste owns, read back off the alpha it was composited through."""
+    ys, xs = np.nonzero(mask > 0.5)
+    if not len(xs):
+        return BBox(0, 0, 0, 0)
+    return BBox(float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1))
+
+
+def zoom_window(rect: BBox, shape: tuple[int, int], margin: float = 0.45) -> BBox:
+    """`rect` plus surroundings, clipped to the patch.
+
+    The artefact worth looking at is the seam, which is the *boundary* of the
+    rectangle -- a close-up cropped to the rectangle itself would show the pasted
+    content with nothing to compare it against.
+    """
+    h, w = shape
+    pad = margin * max(rect.width, rect.height)
+    return BBox(rect.x_min - pad, rect.y_min - pad, rect.x_max + pad, rect.y_max + pad).clipped(w, h)
+
+
 def _fmt(params: dict) -> str:
     return "(" + ", ".join(f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items()) + ")"
 
@@ -552,6 +659,7 @@ def main():
         # the model is actually trained on
         run_augment(aug, [c for _, cs, _ in real_frames for c in cs] or sim_crops, args.out, args.seed)
         run_paste(aug, sim_cropper, sim_crops, real_frames, args.out, args.seed)
+        run_self_paste(aug, sim_cropper, sim_crops, args.out, args.seed)
 
     print(f"done -> {args.out.resolve()}")
 

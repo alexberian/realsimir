@@ -17,8 +17,13 @@ venv/
 env/
 
 # Data / model artifacts (keep out of git; real data lives in /workspace/data/)
-data/
-datasets/
+# Anchored: this is about a data directory at the repo root, not about
+# realsimir/data/, which is the online data generator of step 07.
+/data/
+/datasets/
+# cached detector passes -- CropIndex.save output, rebuilt with
+# `python -m realsimir.data index`
+boxes/
 *.npy
 *.npz
 *.h5
